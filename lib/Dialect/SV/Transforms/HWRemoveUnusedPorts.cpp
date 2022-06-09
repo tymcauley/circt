@@ -167,10 +167,6 @@ void HWRemoveUnusedPortsPass::visitInputPort(StringAttr moduleName,
 }
 
 void HWRemoveUnusedPortsPass::visitValue(Value value) {
-  // If the value has an use, we cannot remove.
-  if (!value.use_empty())
-    return;
-
   // If the value is a result of instance, the result may be dead in every
   // instantiation.
   if (auto instance = value.getDefiningOp<HWInstanceLike>())
@@ -187,6 +183,24 @@ void HWRemoveUnusedPortsPass::visitValue(Value value) {
 
   // Otherwise, delete the value if its defining op is dead.
   if (auto *op = value.getDefiningOp()) {
+    if (isa<sv::RegOp, sv::WireOp>(op)) {
+      if (op->hasAttr("inner_sym"))
+        return;
+      // Check that all operations on the wire are sv.assigns. All other wire
+      // operations will have been handled by other canonicalization.
+      for (auto &use : op->getResult(0).getUses())
+        // FIXME: Use an interface.
+        if (!isa<sv::AssignOp, sv::BPAssignOp, sv::PAssignOp>(use.getOwner()))
+          return;
+
+      // Remove all uses of the wire.
+      for (auto &use : llvm::make_early_inc_range(op->getResult(0).getUses())) {
+        addToWorklist(use.getOwner()->getOperand(1));
+        use.getOwner()->erase();
+      }
+      op->erase();
+      return;
+    }
     // If the op is dead, add its operands to the worklist.
     if (isOpTriviallyDead(op)) {
       for (auto operand : op->getOperands())
